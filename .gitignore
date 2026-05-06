@@ -1,0 +1,34 @@
+# Build outputs
+cpp/build/
+cpp/install/
+
+# Models and cache
+models/
+model_cache/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Debug
+debug/
+
+# IDE
+.vscode/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# llama.cpp build artifacts
+llama.cpp/build/
+llama.cpp/install/
+
+# models 
+models/
+model_cache/
+model_test/
