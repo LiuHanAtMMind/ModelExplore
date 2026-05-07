@@ -1,0 +1,32 @@
+# Build outputs
+model_chat/build/
+model_chat/install/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Debug
+debug/
+
+# IDE
+.vscode/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# llama.cpp build artifacts
+llama.cpp/build/
+llama.cpp/install/
+
+# models 
+models/
+model_cache/
+
+# eval results (generated on device)
+eval_results/
