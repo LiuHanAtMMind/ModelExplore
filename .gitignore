@@ -1,6 +1,6 @@
 # Build outputs
-cpp/build/
-cpp/install/
+model_chat/build/
+model_chat/install/
 
 # Models and cache
 models/

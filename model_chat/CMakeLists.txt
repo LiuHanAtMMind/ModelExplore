@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(qwen_chat LANGUAGES CXX)
+project(model_chat LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -102,16 +102,16 @@ endif()
 # 构建可执行文件
 # ============================================================
 
-add_executable(qwen_chat main.cpp console.cpp)
+add_executable(model_chat main.cpp console.cpp)
 
-target_link_libraries(qwen_chat PRIVATE
+target_link_libraries(model_chat PRIVATE
     llama
     mtmd
     llama-common
 )
 
 # 添加 llama.cpp 源码中的 common/ 和 vendor/ 头文件路径
-target_include_directories(qwen_chat PRIVATE
+target_include_directories(model_chat PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${LLAMA_CPP_SOURCE_DIR}/common"
     "${LLAMA_CPP_SOURCE_DIR}/vendor"
@@ -119,7 +119,7 @@ target_include_directories(qwen_chat PRIVATE
 
 # Linux: 设置 RPATH 为 $ORIGIN, 让可执行文件在同级目录查找 .so
 if(NOT WIN32)
-    set_target_properties(qwen_chat PROPERTIES
+    set_target_properties(model_chat PROPERTIES
         INSTALL_RPATH "$ORIGIN"
         BUILD_WITH_INSTALL_RPATH OFF
     )
@@ -129,7 +129,7 @@ endif()
 # 安装: 可执行文件 + 依赖的共享库 → 同一目录
 # ============================================================
 
-install(TARGETS qwen_chat RUNTIME DESTINATION bin)
+install(TARGETS model_chat RUNTIME DESTINATION bin)
 
 # 收集依赖的 DLL / .so 并安装到 bin/ 目录
 if(WIN32)

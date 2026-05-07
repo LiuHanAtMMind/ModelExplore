@@ -4,7 +4,7 @@
 // 编译方式见 CMakeLists.txt
 //
 // 用法:
-//   ./qwen_chat -m <模型路径> [-v <mmproj路径>] [-ngl -1] [-c 4096]
+//   ./model_chat -m <模型路径> [-v <mmproj路径>] [-ngl -1] [-c 4096]
 //   对话中:
 //     直接输入文字进行对话
 //     /image <图片路径> [问题]   发送图片
@@ -25,6 +25,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -102,15 +104,19 @@ struct AppConfig {
   std::string model_path =
       "./models/Qwen3.5-2B-GGUF/Qwen3.5-2B-UD-Q8_K_XL.gguf";
   std::string mmproj_path; // empty = auto-discover from model directory
+  std::string system_prompt_file = "./chat_system_prompt";
   bool no_vision = false;
   bool vision_cpu = false; // mmproj 强制走 CPU (Jetson 显存不足时使用)
   bool no_think = false;
   bool no_mmap = false;
   bool use_direct_io = false;
   bool use_mlock = false;
+  bool flash_attn = true;
+  enum ggml_type cache_type_k = GGML_TYPE_Q8_0;
+  enum ggml_type cache_type_v = GGML_TYPE_Q8_0;
   int n_gpu_layers = -1;
   int n_ctx = 8192;
-  int n_batch = 2048;
+  int n_batch = 0; // 0 = 自动跟随 n_ctx
   int max_tokens = 4096;
   float temperature = 0.7f;
   float top_p = 0.9f;
@@ -118,6 +124,9 @@ struct AppConfig {
   float min_p = 0.05f;
   float repeat_penalty = 1.15f;
   int repeat_last_n = 256;
+  // single-shot 模式
+  std::string single_prompt; // 非空时进入 single-shot 模式
+  std::string single_image;  // single-shot 时的图片路径
 };
 
 struct ChatContext {
@@ -222,6 +231,21 @@ static bool file_exists(const char *path) {
   return false;
 }
 
+static std::string read_system_prompt(const std::string &path) {
+  std::ifstream ifs(path);
+  if (!ifs.is_open()) {
+    return "";
+  }
+  std::string content((std::istreambuf_iterator<char>(ifs)),
+                      std::istreambuf_iterator<char>());
+  // 去除末尾空白
+  while (!content.empty() &&
+         (content.back() == '\n' || content.back() == '\r' ||
+          content.back() == ' ' || content.back() == '\t'))
+    content.pop_back();
+  return content;
+}
+
 // ==================== 解析命令行参数 ====================
 
 static bool parse_args(int argc, char **argv, AppConfig &config) {
@@ -240,22 +264,58 @@ static bool parse_args(int argc, char **argv, AppConfig &config) {
       config.vision_cpu = true;
     } else if (arg == "--no-think") {
       config.no_think = true;
+    } else if ((arg == "--system-prompt" || arg == "-sp") && i + 1 < argc) {
+      config.system_prompt_file = argv[++i];
     } else if (arg == "--no-mmap") {
       config.no_mmap = true;
     } else if (arg == "--use-direct-io") {
       config.use_direct_io = true;
     } else if (arg == "--mlock") {
       config.use_mlock = true;
+    } else if (arg == "--no-flash-attn" || arg == "-nfa") {
+      config.flash_attn = false;
+    } else if ((arg == "--cache-type-k" || arg == "-ctk") && i + 1 < argc) {
+      std::string t = argv[++i];
+      if (t == "f16")
+        config.cache_type_k = GGML_TYPE_F16;
+      else if (t == "q8_0")
+        config.cache_type_k = GGML_TYPE_Q8_0;
+      else if (t == "q4_0")
+        config.cache_type_k = GGML_TYPE_Q4_0;
+      else {
+        fprintf(stderr, "未知 cache type: %s (支持 f16/q8_0/q4_0)\n",
+                t.c_str());
+        return false;
+      }
+    } else if ((arg == "--cache-type-v" || arg == "-ctv") && i + 1 < argc) {
+      std::string t = argv[++i];
+      if (t == "f16")
+        config.cache_type_v = GGML_TYPE_F16;
+      else if (t == "q8_0")
+        config.cache_type_v = GGML_TYPE_Q8_0;
+      else if (t == "q4_0")
+        config.cache_type_v = GGML_TYPE_Q4_0;
+      else {
+        fprintf(stderr, "未知 cache type: %s (支持 f16/q8_0/q4_0)\n",
+                t.c_str());
+        return false;
+      }
     } else if (arg == "--verbose") {
       g_verbose = true;
     } else if ((arg == "-ngl" || arg == "--n-gpu-layers") && i + 1 < argc) {
       config.n_gpu_layers = std::atoi(argv[++i]);
     } else if ((arg == "-c" || arg == "--ctx-size") && i + 1 < argc) {
       config.n_ctx = std::atoi(argv[++i]);
+    } else if ((arg == "-b" || arg == "--batch-size") && i + 1 < argc) {
+      config.n_batch = std::atoi(argv[++i]);
     } else if (arg == "--temp" && i + 1 < argc) {
       config.temperature = (float)std::atof(argv[++i]);
     } else if ((arg == "-n" || arg == "--max-tokens") && i + 1 < argc) {
       config.max_tokens = std::atoi(argv[++i]);
+    } else if ((arg == "-p" || arg == "--prompt") && i + 1 < argc) {
+      config.single_prompt = argv[++i];
+    } else if (arg == "--image" && i + 1 < argc) {
+      config.single_image = argv[++i];
     } else if (arg == "-h" || arg == "--help") {
       printf("多模态对话 (llama.cpp)\n\n");
       printf("用法: %s [选项]\n\n", argv[0]);
@@ -267,6 +327,8 @@ static bool parse_args(int argc, char **argv, AppConfig &config) {
              config.n_gpu_layers);
       printf("  -c,   --ctx-size <n>       上下文大小     (默认: %d)\n",
              config.n_ctx);
+      printf("  -b,   --batch-size <n>     批处理大小     (默认: 跟随 "
+             "ctx-size)\n");
       printf("  -n,   --max-tokens <n>     最大生成 token (默认: %d)\n",
              config.max_tokens);
       printf("        --temp <f>           温度           (默认: %.2f)\n",
@@ -275,11 +337,21 @@ static bool parse_args(int argc, char **argv, AppConfig &config) {
       printf("        --vision-cpu         视觉编码器在 CPU 上运行 (避免 "
              "显存不足)\n");
       printf("        --no-think           禁用思考模式 (Qwen3.5 等)\n");
+      printf("  -sp,  --system-prompt <path> 系统提示词文件 (默认: %s)\n",
+             config.system_prompt_file.c_str());
       printf(
           "        --no-mmap            禁用 mmap, 改为直接读取模型到内存\n");
       printf(
           "        --use-direct-io      启用 direct I/O (支持时优先于 mmap)\n");
       printf("        --mlock              锁定模型到物理内存 (防止换出)\n");
+      printf("  -nfa, --no-flash-attn      禁用 Flash Attention\n");
+      printf("  -ctk, --cache-type-k <type> KV cache K 类型 (默认: q8_0, 可选: "
+             "f16/q8_0/q4_0)\n");
+      printf("  -ctv, --cache-type-v <type> KV cache V 类型 (默认: q8_0, 可选: "
+             "f16/q8_0/q4_0)\n");
+      printf("  -p,   --prompt <text>      Single-shot 模式: 输入一句话, "
+             "输出回复后退出\n");
+      printf("        --image <path>       Single-shot 模式下附加图片\n");
       printf("        --verbose            显示详细日志 (含 CUDA debug)\n");
       printf("  -h,   --help               显示帮助\n");
       return false;
@@ -296,7 +368,7 @@ static bool parse_args(int argc, char **argv, AppConfig &config) {
 static bool init_resources(const AppConfig &config, ChatContext &chat) {
   llama_backend_init();
 
-  printf("正在加载模型: %s\n", config.model_path.c_str());
+  fprintf(stderr, "正在加载模型: %s\n", config.model_path.c_str());
 
   llama_model_params model_params = llama_model_default_params();
   model_params.n_gpu_layers = config.n_gpu_layers;
@@ -315,7 +387,12 @@ static bool init_resources(const AppConfig &config, ChatContext &chat) {
 
   llama_context_params ctx_params = llama_context_default_params();
   ctx_params.n_ctx = config.n_ctx;
-  ctx_params.n_batch = config.n_batch;
+  ctx_params.n_batch = config.n_batch > 0 ? config.n_batch : config.n_ctx;
+  ctx_params.flash_attn_type = config.flash_attn
+                                   ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+                                   : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+  ctx_params.type_k = config.cache_type_k;
+  ctx_params.type_v = config.cache_type_v;
 
   chat.ctx = llama_init_from_model(chat.model, ctx_params);
   if (!chat.ctx) {
@@ -323,8 +400,11 @@ static bool init_resources(const AppConfig &config, ChatContext &chat) {
     return false;
   }
 
-  // 视觉编码器: 若未手动指定, 自动从模型目录查找 mmproj-F16.gguf
+  // 回写实际 batch 大小, 供后续函数使用
   AppConfig &cfg = const_cast<AppConfig &>(config);
+  cfg.n_batch = (int)llama_n_batch(chat.ctx);
+
+  // 视觉编码器: 若未手动指定, 自动从模型目录查找 mmproj-F16.gguf
   if (cfg.mmproj_path.empty() && !cfg.no_vision) {
     std::string model_dir = cfg.model_path;
     size_t sep = model_dir.find_last_of("/\\");
@@ -472,7 +552,7 @@ static bool eval_multimodal(ChatContext &chat, const AppConfig &config,
     if (chunk_n_tokens > actual_n_batch) {
       fprintf(stderr,
               "[警告] 图片 token 数 (%d) 超过 batch 上限 (%u), "
-              "请增大 --ctx-size (建议 >= 2048)\n\n",
+              "请增大 --batch-size 或 --ctx-size\n\n",
               (int)chunk_n_tokens, actual_n_batch);
       mtmd_input_chunks_free(chunks);
       for (auto *b : bitmaps)
@@ -562,8 +642,10 @@ static void status_show_gen(const ChatContext &chat, const AppConfig &config,
 
 // ==================== 生成回复 ====================
 
-static std::string generate_response(ChatContext &chat,
-                                     const AppConfig &config) {
+using token_callback_t = std::function<void(int gen_tokens, double speed)>;
+
+static std::string generate_response(ChatContext &chat, const AppConfig &config,
+                                     token_callback_t on_token = nullptr) {
   printf("AI: ");
   fflush(stdout);
 
@@ -593,11 +675,13 @@ static std::string generate_response(ChatContext &chat,
     response += piece;
     gen_tokens++;
 
-    // 更新底部状态栏
-    auto t_now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(t_now - t_start).count();
-    double speed = (elapsed > 0.0) ? gen_tokens / elapsed : 0.0;
-    status_show_gen(chat, config, gen_tokens, speed);
+    // 通过回调通知调用方 (例如更新状态栏)
+    if (on_token) {
+      auto t_now = std::chrono::steady_clock::now();
+      double elapsed = std::chrono::duration<double>(t_now - t_start).count();
+      double speed = (elapsed > 0.0) ? gen_tokens / elapsed : 0.0;
+      on_token(gen_tokens, speed);
+    }
 
     llama_batch batch = llama_batch_get_one(&token, 1);
     if (llama_decode(chat.ctx, batch) != 0) {
@@ -615,9 +699,6 @@ static std::string generate_response(ChatContext &chat,
 
   g_is_generating = 0;
   g_interrupted = 0;
-
-  // 生成结束后状态栏只显示 context 占用
-  status_show_ctx(chat, config);
 
   if (!g_interrupted && gen_tokens >= config.max_tokens) {
     printf("\n[已达生成上限 %d tokens, 可用 -n 调整]", config.max_tokens);
@@ -654,8 +735,19 @@ static void chat_loop(ChatContext &chat, const AppConfig &config) {
       break;
 
     if (user_input == "/clear" || user_input == "/reset") {
+      // 保留系统提示词
+      common_chat_msg sys_msg_backup;
+      bool has_system =
+          !chat.messages.empty() && chat.messages[0].role == "system";
+      if (has_system) {
+        sys_msg_backup = chat.messages[0];
+      }
       chat.messages.clear();
       chat.image_paths.clear();
+      if (has_system) {
+        chat.messages.push_back(sys_msg_backup);
+        chat.image_paths.push_back("");
+      }
       chat.n_past = 0;
       chat.n_kv_used = 0;
       chat.prev_formatted.clear();
@@ -758,7 +850,11 @@ static void chat_loop(ChatContext &chat, const AppConfig &config) {
     status_show_ctx(chat, config);
 
     // 采样生成回复
-    std::string response = generate_response(chat, config);
+    auto status_cb = [&](int gen_tokens, double speed) {
+      status_show_gen(chat, config, gen_tokens, speed);
+    };
+    std::string response = generate_response(chat, config, status_cb);
+    status_show_ctx(chat, config);
 
     common_chat_msg asst_msg;
     asst_msg.role = "assistant";
@@ -769,6 +865,57 @@ static void chat_loop(ChatContext &chat, const AppConfig &config) {
     chat.prev_formatted = apply_chat_template(
         chat.chat_tmpls.get(), chat.messages, false, !config.no_think);
   }
+}
+
+// ==================== Single-shot 模式 ====================
+
+static int run_single_shot(ChatContext &chat, const AppConfig &config) {
+  // 构建用户消息
+  std::string user_content;
+  bool has_image = !config.single_image.empty() &&
+                   file_exists(config.single_image.c_str()) && chat.ctx_mtmd;
+  if (has_image) {
+    user_content =
+        std::string(mtmd_default_marker()) + "\n" + config.single_prompt;
+  } else {
+    user_content = config.single_prompt;
+  }
+
+  common_chat_msg user_msg;
+  user_msg.role = "user";
+  user_msg.content = user_content;
+  chat.messages.push_back(user_msg);
+  chat.image_paths.push_back(has_image ? config.single_image : "");
+
+  // 格式化 prompt
+  std::string full_formatted = apply_chat_template(
+      chat.chat_tmpls.get(), chat.messages, true, !config.no_think);
+  if (full_formatted.empty()) {
+    fprintf(stderr, "错误: 格式化模板失败\n");
+    return 1;
+  }
+
+  // 评估 prompt
+  std::vector<std::string> eval_images;
+  if (has_image) {
+    eval_images.push_back(config.single_image);
+  }
+
+  bool ok;
+  if (!eval_images.empty() && chat.ctx_mtmd) {
+    ok = eval_multimodal(chat, config, full_formatted, eval_images);
+  } else {
+    ok = eval_text(chat, config, full_formatted);
+  }
+
+  if (!ok) {
+    fprintf(stderr, "错误: prompt 评估失败\n");
+    return 1;
+  }
+
+  // 生成回复 (无回调, 不更新状态栏)
+  generate_response(chat, config);
+  return 0;
 }
 
 // ==================== 主函数 ====================
@@ -789,9 +936,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // 启用 readline 风格输入 (上下左右方向键 + 历史记录) + 状态栏
-  console::init();
-  std::atexit([]() { console::cleanup(); });
+  bool single_shot = !config.single_prompt.empty();
+
+  // 交互模式才启用 readline / 状态栏
+  if (!single_shot) {
+    console::init();
+    std::atexit([]() { console::cleanup(); });
+  }
 
   ChatContext chat;
   if (!init_resources(config, chat)) {
@@ -799,7 +950,31 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // 初始状态栏
+  // 加载系统提示词
+  if (!config.system_prompt_file.empty()) {
+    std::string sys_prompt = read_system_prompt(config.system_prompt_file);
+    if (!sys_prompt.empty()) {
+      common_chat_msg sys_msg;
+      sys_msg.role = "system";
+      sys_msg.content = sys_prompt;
+      chat.messages.push_back(sys_msg);
+      chat.image_paths.push_back("");
+      printf("[OK] 已加载系统提示词: %s (%zu 字符)\n",
+             config.system_prompt_file.c_str(), sys_prompt.size());
+    } else {
+      printf("[INFO] 未找到系统提示词文件: %s\n",
+             config.system_prompt_file.c_str());
+    }
+  }
+
+  // ========== Single-shot 模式 ==========
+  if (single_shot) {
+    int ret = run_single_shot(chat, config);
+    cleanup_resources(chat);
+    return ret;
+  }
+
+  // ========== 交互模式 ==========
   status_show_ctx(chat, config);
 
   chat_loop(chat, config);
