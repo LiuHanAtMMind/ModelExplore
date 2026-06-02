@@ -8,7 +8,7 @@ __pycache__/
 *.pyc
 
 # Debug
-debug/
+/debug/
 
 # IDE
 .vscode/
@@ -24,8 +24,7 @@ Desktop.ini
 llama.cpp/build/
 llama.cpp/install/
 
-# models 
-models/
+# models
 model_cache/
 
 # eval results (generated on device)

@@ -105,6 +105,7 @@ struct AppConfig {
       "./models/Qwen3.5-2B-GGUF/Qwen3.5-2B-UD-Q8_K_XL.gguf";
   std::string mmproj_path; // empty = auto-discover from model directory
   std::string system_prompt_file = "./chat_system_prompt";
+  bool no_system_prompt = false;
   bool no_vision = false;
   bool vision_cpu = false; // mmproj 强制走 CPU (Jetson 显存不足时使用)
   bool no_think = false;
@@ -266,6 +267,8 @@ static bool parse_args(int argc, char **argv, AppConfig &config) {
       config.no_think = true;
     } else if ((arg == "--system-prompt" || arg == "-sp") && i + 1 < argc) {
       config.system_prompt_file = argv[++i];
+    } else if (arg == "--no-system-prompt") {
+      config.no_system_prompt = true;
     } else if (arg == "--no-mmap") {
       config.no_mmap = true;
     } else if (arg == "--use-direct-io") {
@@ -339,6 +342,7 @@ static bool parse_args(int argc, char **argv, AppConfig &config) {
       printf("        --no-think           禁用思考模式 (Qwen3.5 等)\n");
       printf("  -sp,  --system-prompt <path> 系统提示词文件 (默认: %s)\n",
              config.system_prompt_file.c_str());
+            printf("        --no-system-prompt   不加载系统提示词文件\n");
       printf(
           "        --no-mmap            禁用 mmap, 改为直接读取模型到内存\n");
       printf(
@@ -863,7 +867,7 @@ static void chat_loop(ChatContext &chat, const AppConfig &config) {
     chat.image_paths.push_back("");
 
     chat.prev_formatted = apply_chat_template(
-        chat.chat_tmpls.get(), chat.messages, false, !config.no_think);
+        chat.chat_tmpls.get(), chat.messages, true, !config.no_think);
   }
 }
 
@@ -951,7 +955,7 @@ int main(int argc, char **argv) {
   }
 
   // 加载系统提示词
-  if (!config.system_prompt_file.empty()) {
+  if (!config.no_system_prompt && !config.system_prompt_file.empty()) {
     std::string sys_prompt = read_system_prompt(config.system_prompt_file);
     if (!sys_prompt.empty()) {
       common_chat_msg sys_msg;
@@ -965,6 +969,8 @@ int main(int argc, char **argv) {
       printf("[INFO] 未找到系统提示词文件: %s\n",
              config.system_prompt_file.c_str());
     }
+  } else if (config.no_system_prompt) {
+    printf("[INFO] 已禁用系统提示词\n");
   }
 
   // ========== Single-shot 模式 ==========

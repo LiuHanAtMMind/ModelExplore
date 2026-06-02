@@ -34,8 +34,31 @@ LLAMA_INSTALL_DIR="$LLAMA_CPP_DIR/install/jetson"
 APP_BUILD_DIR="$SCRIPT_DIR/build/jetson"
 
 CUDA_FLAG=""
+CUDA_COMPILER=""
+
+detect_cuda_compiler() {
+    if [ -n "${CUDACXX:-}" ] && [ -x "${CUDACXX}" ]; then
+        printf '%s' "$CUDACXX"
+    elif command -v nvcc >/dev/null 2>&1; then
+        command -v nvcc
+    elif [ -x "/usr/local/cuda/bin/nvcc" ]; then
+        printf '%s' "/usr/local/cuda/bin/nvcc"
+    fi
+}
+
 if [ "${CUDA:-1}" != "0" ]; then
-    CUDA_FLAG="-DGGML_CUDA=ON"
+    CUDA_COMPILER="$(detect_cuda_compiler)"
+    if [ -n "$CUDA_COMPILER" ]; then
+        CUDA_FLAG="-DGGML_CUDA=ON"
+    elif [ -n "${CUDA+x}" ]; then
+        echo "错误: CUDA=${CUDA} 但未找到可用的 nvcc"
+        echo "  请安装 CUDA 编译器, 或设置 CUDACXX=/path/to/nvcc"
+        echo "  如需仅 CPU 构建, 请使用: CUDA=0 ./build.sh"
+        exit 1
+    else
+        echo "[WARN] 未找到 nvcc, 自动禁用 CUDA 构建"
+        echo "       如需启用 CUDA, 请设置 CUDACXX=/path/to/nvcc 或确保 nvcc 在 PATH 中"
+    fi
 fi
 
 # ============================================================
@@ -48,6 +71,11 @@ build_llama() {
     echo "  源码: $LLAMA_CPP_DIR"
     echo "  构建: $LLAMA_BUILD_DIR"
     echo "  安装: $LLAMA_INSTALL_DIR"
+    if [ -n "$CUDA_FLAG" ]; then
+        echo "  CUDA: 启用 ($CUDA_COMPILER)"
+    else
+        echo "  CUDA: 禁用"
+    fi
     echo "===================================="
 
     if [ "${CLEAN:-0}" = "1" ]; then
@@ -63,8 +91,17 @@ build_llama() {
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX="$LLAMA_INSTALL_DIR"
         -DLLAMA_FLASH_ATTN=ON
+        -DLLAMA_BUILD_COMMON=ON
+        -DLLAMA_BUILD_TOOLS=ON
+        -DLLAMA_BUILD_EXAMPLES=OFF
+        -DLLAMA_BUILD_TESTS=OFF
+        -DLLAMA_BUILD_SERVER=OFF
+        -DLLAMA_BUILD_WEBUI=OFF
+        -DGGML_BUILD_TESTS=OFF
+        -DGGML_BUILD_EXAMPLES=OFF
     )
     [ -n "$CUDA_FLAG" ] && cmake_args+=("$CUDA_FLAG")
+    [ -n "$CUDA_COMPILER" ] && cmake_args+=("-DCMAKE_CUDA_COMPILER=$CUDA_COMPILER")
 
     echo ""
     echo "[cmake configure]"

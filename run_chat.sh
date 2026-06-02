@@ -3,8 +3,9 @@
 BIN=./model_chat/install/jetson/bin/model_chat
 MODEL_DIR=./models
 
-# Scan for .gguf files
-mapfile -t models < <(find "$MODEL_DIR" -name "*.gguf" -type f | sort)
+# Scan for primary model GGUF files only.
+# Exclude auxiliary projector files like mmproj-F16.gguf from the menu.
+mapfile -t models < <(find "$MODEL_DIR" -name "*.gguf" -type f ! -iname "mmproj*.gguf" | sort)
 
 if [ ${#models[@]} -eq 0 ]; then
     echo "No .gguf models found in $MODEL_DIR"
@@ -28,4 +29,4 @@ MODEL="${models[$((choice-1))]}"
 echo "Loading: $MODEL"
 echo ""
 
-$BIN -m "$MODEL" -n 8192 --ctx-size 16384 --use-direct-io
+$BIN -m "$MODEL" -n 8192 --ctx-size 16384 --use-direct-io -ngl -1

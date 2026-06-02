@@ -2,12 +2,12 @@
 #
 # 两步构建:
 #   1. 在 llama.cpp 目录下构建并 install → llama.cpp/install/x64/
-#   2. qwen_chat 通过 find_package 链接预构建的 llama.cpp
+#   2. model_chat 通过 find_package 链接预构建的 llama.cpp
 #
 # 用法:
 #   .\build.ps1                           # 构建全部
 #   .\build.ps1 -Target llama             # 只构建 llama.cpp
-#   .\build.ps1 -Target app               # 只构建 qwen_chat (需先构建 llama)
+#   .\build.ps1 -Target app               # 只构建 model_chat (需先构建 llama)
 #   .\build.ps1 -Clean                    # 清除后重新构建
 #   .\build.ps1 -CudaOn                   # 启用 CUDA
 #   .\build.ps1 -LlamaCppDir D:\llama.cpp  # 指定 llama.cpp 路径
@@ -28,20 +28,22 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $LlamaCppDir) {
     if ($env:LLAMA_CPP_DIR) {
         $LlamaCppDir = $env:LLAMA_CPP_DIR
-    } else {
+    }
+    else {
         $DefaultDir = Join-Path (Split-Path $ScriptDir) "llama.cpp"
         if (Test-Path $DefaultDir) {
             $LlamaCppDir = $DefaultDir
-        } else {
+        }
+        else {
             Write-Error "请设置 LLAMA_CPP_DIR 环境变量或传入 -LlamaCppDir 参数"
             exit 1
         }
     }
 }
 
-$LlamaBuildDir   = Join-Path $LlamaCppDir "build\x64"
+$LlamaBuildDir = Join-Path $LlamaCppDir "build\x64"
 $LlamaInstallDir = Join-Path $LlamaCppDir "install\x64"
-$AppBuildDir     = Join-Path $ScriptDir   "build\x64"
+$AppBuildDir = Join-Path $ScriptDir   "build\x64"
 
 # ============================================================
 # Step 1: 构建 llama.cpp 并 install
@@ -59,7 +61,7 @@ function Build-LlamaCpp {
     Write-Host "====================================" -ForegroundColor Cyan
 
     if ($Clean) {
-        if (Test-Path $LlamaBuildDir)   { Remove-Item -Recurse -Force $LlamaBuildDir }
+        if (Test-Path $LlamaBuildDir) { Remove-Item -Recurse -Force $LlamaBuildDir }
         if (Test-Path $LlamaInstallDir) { Remove-Item -Recurse -Force $LlamaInstallDir }
     }
 
@@ -92,7 +94,7 @@ function Build-LlamaCpp {
 }
 
 # ============================================================
-# Step 2: 构建 qwen_chat
+# Step 2: 构建 model_chat
 #   链接 llama.cpp/install/x64/ 的预构建库
 #   产物:   cpp/build/x64/
 # ============================================================
@@ -103,7 +105,7 @@ function Build-App {
     }
 
     Write-Host "`n====================================" -ForegroundColor Cyan
-    Write-Host "  [Step 2] 构建 qwen_chat (x64)" -ForegroundColor Cyan
+    Write-Host "  [Step 2] 构建 model_chat (x64)" -ForegroundColor Cyan
     Write-Host "  源码:   $ScriptDir" -ForegroundColor Cyan
     Write-Host "  构建:   $AppBuildDir" -ForegroundColor Cyan
     Write-Host "  链接:   $LlamaInstallDir" -ForegroundColor Cyan
@@ -127,25 +129,25 @@ function Build-App {
 
     Write-Host "`n[cmake configure]" -ForegroundColor Green
     & cmake @cmakeArgs
-    if ($LASTEXITCODE -ne 0) { throw "qwen_chat configure 失败" }
+    if ($LASTEXITCODE -ne 0) { throw "model_chat configure 失败" }
 
     Write-Host "`n[cmake build]" -ForegroundColor Green
     & cmake --build $AppBuildDir --config Release -- /m
-    if ($LASTEXITCODE -ne 0) { throw "qwen_chat build 失败" }
+    if ($LASTEXITCODE -ne 0) { throw "model_chat build 失败" }
 
     # install: 可执行文件 + 依赖 DLL → install/x64/bin/
     $AppInstallDir = Join-Path $ScriptDir "install\x64"
     Write-Host "`n[cmake install]" -ForegroundColor Green
     & cmake --install $AppBuildDir --config Release --prefix $AppInstallDir
-    if ($LASTEXITCODE -ne 0) { throw "qwen_chat install 失败" }
+    if ($LASTEXITCODE -ne 0) { throw "model_chat install 失败" }
 
-    Write-Host "`n[OK] qwen_chat 构建完成!" -ForegroundColor Green
-    Write-Host "  产物: $AppInstallDir\bin\qwen_chat.exe (含依赖 DLL)" -ForegroundColor Green
+    Write-Host "`n[OK] model_chat 构建完成!" -ForegroundColor Green
+    Write-Host "  产物: $AppInstallDir\bin\model_chat.exe (含依赖 DLL)" -ForegroundColor Green
 }
 
 # ---- 执行 ----
 switch ($Target) {
-    "all"   { Build-LlamaCpp; Build-App }
+    "all" { Build-LlamaCpp; Build-App }
     "llama" { Build-LlamaCpp }
-    "app"   { Build-App }
+    "app" { Build-App }
 }
